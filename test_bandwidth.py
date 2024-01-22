@@ -59,24 +59,25 @@ class AllReduce(CollectiveOps):
 
 class AllGather(CollectiveOps):
     def __call__(self, tensor: torch.Tensor) -> None:
-        tensor = tensor.contiguous()
-        dist.all_gather(tensor)   
+        sub_tensor_list = list(torch.chunk(tensor, self.world_size, dim=0))
+        dist.all_gather(sub_tensor_list, sub_tensor_list[0]) 
 
     def ranks_factor(self):
         return (self.world_size - 1) / self.world_size 
 
 class Broadcast(CollectiveOps):
-    def __call__(self, tensor: torch.Tensor) -> None:
+    def __call__(self, tensor: torch.Tensor,src) -> None:
         tensor = tensor.contiguous()
-        dist.broadcast(tensor)
+        dist.broadcast(tensor,src)
 
     def ranks_factor(self):
         return 1
 
 class AllToAll(CollectiveOps):
     def __call__(self, tensor: torch.Tensor) -> None:
-        tensor = tensor.contiguous()
-        dist.all_to_all(tensor)
+        input_tensor_list = list(torch.chunk(tensor, self.world_size, dim=0))
+        output_tensor_list = input_tensor_list[:]
+        dist.all_to_all(output_tensor_list, input_tensor_list)
 
     def ranks_factor(self):
         return (self.world_size - 1) / self.world_size 
@@ -85,7 +86,12 @@ def avg_time(op, tensor:torch.tensor, iters):
     torch.cuda.synchronize()
     start = time.time()
     for _ in range(iters):
-        op(tensor)
+        if isinstance(op, Broadcast):
+            if dist.get_rank == 0:
+                src = dist.get_rank()
+                op(tensor, src)
+        else:
+            op(tensor)
     torch.cuda.synchronize()
     end = time.time()
     return (end - start) / iters
@@ -102,16 +108,21 @@ def test_bandwidth(op, tensor_list:List[int], iters: int = 10, warmup_iters: int
     for tensor_elements in tensor_list:
         tensor = torch.rand(tensor_elements, dtype=dtype, device='cuda')
         time = avg_time(op, tensor, iters)
-        #total time
-        time = torch.tensor([time],device = 'cuda')
-        dist.all_reduce(time)
-        time_per_node = time/dist.get_world_size()
+        if isinstance(op, Broadcast):
+            time_per_node = time
+        else:
+            #total time
+            time = torch.tensor([time],device = 'cuda')
+            dist.all_reduce(time)
+            time_per_node = time/dist.get_world_size()
+        if hasattr(time_per_node, 'item'):
+            time_per_node = time_per_node.item()
         #bandwidth
-        algbw = (tensor_elements * (torch.finfo(dtype).bits // 8))/ time_per_node.item()
+        algbw = (tensor_elements * (torch.finfo(dtype).bits // 8))/ time_per_node
         busbw = algbw * op.ranks_factor()
         busbw_total += busbw
         pretty_table.add_row([(tensor_elements * (torch.finfo(dtype).bits // 8)), tensor_elements,
-                              dtype, collective_op, time_per_node.item()*1000, algbw / 1024**3, busbw / 1024**3])
+                              dtype, collective_op, time_per_node*1000, algbw / 1024**3, busbw / 1024**3])
     if dist.get_rank() == 0:
         avg_busbw = busbw_total / len(tensor_list)
         print(pretty_table)
@@ -159,9 +170,9 @@ def get_tensor_list(minbytes:str, maxbytes:str, stepbytes:str, stepfactor:str, d
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--collective_op', type=str, default='allreduce',
-                        choices=['allreduce', 'allgather', 'broadcast'])
+                        choices=['allreduce', 'allgather', 'broadcast', 'alltoall'])
     parser.add_argument('-min', '--minbytes', type=str, default='1M')
-    parser.add_argument('-max', '--maxbytes', type=str, default='32M')
+    parser.add_argument('-max', '--maxbytes', type=str, default='64M')
     parser.add_argument('-b', '--stepbytes', type=str, default='1M')
     parser.add_argument('-f', '--stepfactor', type=int, default=2)
     parser.add_argument('-w', '--warmup_iters', type=int, default=5) 
