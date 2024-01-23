@@ -133,14 +133,14 @@ def test_bandwidth(op, tensor_list:List[int], iters: int = 10, warmup_iters: int
         print(pretty_table)
         print(f'Average busbw: {avg_busbw/1024**3:.3f} GB/s')    
 
-def get_op(ops: str, world_size: int = 1)-> CollectiveOp:
-    if ops == 'allreduce':
+def get_op(op: str, world_size: int = 1)-> CollectiveOp:
+    if op == 'allreduce':
         return AllReduce(world_size)
-    elif ops == 'allgather':
+    elif op == 'allgather':
         return AllGather(world_size)
-    elif ops == 'broadcast':
+    elif op == 'broadcast':
         return Broadcast(world_size)
-    elif ops == 'alltoall':
+    elif op == 'alltoall':
         return AllToAll(world_size)
 
 def str_to_int(bytes: str) -> int:
@@ -202,7 +202,7 @@ if __name__ == '__main__':
     elif args.dtype == 'float':
         dtype = torch.float
         
-    world_size = int(os.getenv("WORLD_SIZE", 1))
+    world_size = dist.get_world_size()
     collective_op = get_op(args.collective_op, world_size) 
     tensor_list = get_tensor_list(args.minbytes, args.maxbytes, args.stepbytes, args.stepfactor, dtype)
 
