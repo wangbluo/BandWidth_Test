@@ -8,16 +8,16 @@ import torch
 import torch.distributed as dist
 from typing import List
 from prettytable import PrettyTable
-os.environ['CUDA_VISIBLE_DEVICES'] = '1,2,3,4'
     
-def setup(rank, world_size):
+def setup():
     os.environ["MASTER_ADDR"] = os.getenv("MASTER_ADDR", "localhost")
     os.environ["MASTER_PORT"] = os.getenv("MASTER_PORT", "12355")
-    os.environ["RANK"] = os.getenv("RANK", "0")
-    os.environ["WORLD_SIZE"] = os.getenv("WORLD_SIZE", "1")
+    rank = int(os.environ['RANK'])
+    local_rank = int(os.environ['LOCAL_RANK'])
+    world_size = int(os.environ['WORLD_SIZE'])
     dist.init_process_group(world_size=world_size, rank=rank,
                             init_method="env://", backend="nccl")
-    torch.cuda.set_device(rank)
+    torch.cuda.set_device(local_rank)
     device_id = torch.cuda.current_device()
     print("Process running on GPU:", device_id)
 
@@ -39,8 +39,8 @@ def setup(rank, world_size):
         B = S/t * (n-1)/n = algbw * (n-1)/n
 """
 
-class CollectiveOps:
-    @abstractmethod
+class CollectiveOp:
+
     def __init__(self, world_size: int):
         self.world_size = world_size
 
@@ -48,7 +48,11 @@ class CollectiveOps:
     def __call__(self, tensor: torch.Tensor) -> None:
         pass
 
-class AllReduce(CollectiveOps):
+    @abstractmethod
+    def ranks_factor(self):
+        pass
+
+class AllReduce(CollectiveOp):
     def __call__(self, tensor: torch.Tensor) -> None:
         tensor = tensor.contiguous()
         dist.all_reduce(tensor)
@@ -57,7 +61,7 @@ class AllReduce(CollectiveOps):
         return 2 * (self.world_size - 1) / self.world_size
 
 
-class AllGather(CollectiveOps):
+class AllGather(CollectiveOp):
     def __call__(self, tensor: torch.Tensor) -> None:
         sub_tensor_list = list(torch.chunk(tensor, self.world_size, dim=0))
         dist.all_gather(sub_tensor_list, sub_tensor_list[0]) 
@@ -65,7 +69,7 @@ class AllGather(CollectiveOps):
     def ranks_factor(self):
         return (self.world_size - 1) / self.world_size 
 
-class Broadcast(CollectiveOps):
+class Broadcast(CollectiveOp):
     def __call__(self, tensor: torch.Tensor,src) -> None:
         tensor = tensor.contiguous()
         dist.broadcast(tensor,src)
@@ -73,7 +77,7 @@ class Broadcast(CollectiveOps):
     def ranks_factor(self):
         return 1
 
-class AllToAll(CollectiveOps):
+class AllToAll(CollectiveOp):
     def __call__(self, tensor: torch.Tensor) -> None:
         input_tensor_list = list(torch.chunk(tensor, self.world_size, dim=0))
         output_tensor_list = input_tensor_list[:]
@@ -82,7 +86,7 @@ class AllToAll(CollectiveOps):
     def ranks_factor(self):
         return (self.world_size - 1) / self.world_size 
 
-def avg_time(op, tensor:torch.tensor, iters):
+def avg_time(op, tensor, iters):
     torch.cuda.synchronize()
     start = time.time()
     for _ in range(iters):
@@ -102,6 +106,7 @@ def test_bandwidth(op, tensor_list:List[int], iters: int = 10, warmup_iters: int
     maxtensor = torch.rand(tensor_list[-1], dtype=dtype, device='cuda')
     avg_time(op, mintensor, warmup_iters)
     avg_time(op, maxtensor, warmup_iters)
+
     pretty_table = PrettyTable(['bytes(B)', 'tensorElements', 'dtype', 'collective op', 'time(ms)',
                         'algbw(GB/s)', 'busbw(GB/s)'], float_format='.3')
     busbw_total = 0
@@ -128,7 +133,7 @@ def test_bandwidth(op, tensor_list:List[int], iters: int = 10, warmup_iters: int
         print(pretty_table)
         print(f'Average busbw: {avg_busbw/1024**3:.3f} GB/s')    
 
-def get_op(ops: str, world_size: int = 1)-> CollectiveOps:
+def get_op(ops: str, world_size: int = 1)-> CollectiveOp:
     if ops == 'allreduce':
         return AllReduce(world_size)
     elif ops == 'allgather':
@@ -149,17 +154,18 @@ def str_to_int(bytes: str) -> int:
         return int(bytes[:-1]) * 1024**3
     return int(bytes)
 
-def get_tensor_list(minbytes:str, maxbytes:str, stepbytes:str, stepfactor:str, dtype = torch.float) -> List[int]:
+def get_tensor_list(minbytes:str, maxbytes:str, step_bytes:str, step_factor:str, dtype = torch.float) -> List[int]:
     minbytes = str_to_int(minbytes) 
     maxbytes = str_to_int(maxbytes) 
-    stepbytes = str_to_int(stepbytes)  
+    step_bytes = str_to_int(step_bytes)  
     bytes_list = []
-    if stepfactor == 1:
-        bytes_list = list(range(minbytes, maxbytes + 1, stepbytes))
+    if step_factor == 1:
+        bytes_list = list(range(minbytes, maxbytes + 1, step_bytes))
     else:
         while minbytes <= maxbytes:
             bytes_list.append(minbytes)
-            minbytes *= stepfactor
+            minbytes *= step_factor
+
     # The list of elements number for testing tensors, arranged in ascending order. 
     # 32M bytes -> 32*1024**2 / (torch.finfo(float).bits // 8)
     bytes_list = sorted(bytes_list) 
@@ -186,10 +192,8 @@ if __name__ == '__main__':
         print("CUDA is available. GPU can be used.")
     else:
         print("CUDA is not available. Using CPU.")
-        sys.exit("Exiting the program due to lack of GPU.")
-    rank = int(os.getenv("RANK", 0))
-    world_size = int(os.getenv("WORLD_SIZE", 1))
-    setup(rank, world_size)
+
+    setup()
 
     if args.dtype == 'fp16':
         dtype = torch.float16
@@ -198,7 +202,8 @@ if __name__ == '__main__':
     elif args.dtype == 'float':
         dtype = torch.float
         
+    world_size = int(os.getenv("WORLD_SIZE", 1))
     collective_op = get_op(args.collective_op, world_size) 
     tensor_list = get_tensor_list(args.minbytes, args.maxbytes, args.stepbytes, args.stepfactor, dtype)
 
-    test_bandwidth(collective_op, tensor_list, args.iters, args.warmup_iters, dtype,args.collective_op)
+    test_bandwidth(collective_op, tensor_list, args.iters, args.warmup_iters, dtype, args.collective_op)
