@@ -14,7 +14,7 @@ Multi-nodes multi-GPUs：
 Run run_test_bandwidth.sh script. 
 For example, run command ```sh run_test_bandwidth.sh 2 2 0 10.20.1.81 22``` on the first node, and run command ```sh run_test_bandwidth.sh 2 2 1 10.20.1.81 22``` on the second node. 
 
-The ```$NNODES``` represents the machine you want to use and ```$NODE_RANK``` represents the gpus you want to use per node machine.  
+The ```$NNODES``` represents the machine number you want to use and ```$NODE_RANK``` represents the gpus number you want to use per node machine.  
 
 ![img_v3_027b_44e5f429-6e6f-4912-8151-aaa6825030cg](https://github.com/wangbluo/BandWidth_Test/assets/32676639/e29a14f0-0234-4d71-b685-76502c942731)
 ![img_v3_027b_484d8993-21bc-4671-b624-2a8b6e1cf58g](https://github.com/wangbluo/BandWidth_Test/assets/32676639/d9ad0939-768b-455f-bccf-92f30897bc29)
