@@ -1,5 +1,5 @@
 # BandWidth_Test
-Test the GPU bandwidth of  collectives operators like all-reduce, all-gather, broadcast and all-to-all primitives on single-node multi-GPUs (2, 4, 8 cards) and multi-nodes multi-GPUs (16 cards) setups, using only PyTorch and Python built-in packages.
+Test the GPU bandwidth of  collectives operators like all-reduce, all-gather, broadcast and all-to-all primitives on single-node multi-GPUs and multi-nodes multi-GPUs (16 cards) setups, using only PyTorch and Python built-in packages.
 
 
 Single-node multi-GPUs：
